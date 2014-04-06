@@ -1,0 +1,270 @@
+<html>
+<head>
+<title>Arduino Serial Prompt configuration helper</title>
+
+<script type="text/javascript">
+
+var config = {
+	name: 'config',
+
+	actions: [
+		{ name: 'active', type: 'bool', cmd: 'act', desc: 'Active' },
+		{ name: 'test1', type: 'int', cmd: 'test1', desc: 'Test input 1', min: '-10', max: '10' },
+		{ name: 'test2', type: 'int', cmd: 'test2', desc: 'Test input 2', min: 'INT_MIN', max: 'INT_MAX' },
+		{ name: 'load', type: 'execute', cmd: 'load', method: 'loadConfig', desc: 'Load current config' },
+		{ name: 'save', type: 'execute', cmd: 'save', method: 'saveConfig', desc: 'Save current config' },
+		{ name: 'print', type: 'execute', cmd: 'print', method: 'printConfig', desc: 'Print current config' },
+		{ name: 'mem', type: 'execute', cmd: 'mem', method: 'printRawMem', desc: 'Print memory bytes' },
+		{
+			name: 'sub1',
+			type: 'sub',
+			cmd: 'sub1',
+			title: 'sub 1',
+			desc: 'Sub menu 1',
+			actions: [
+				{ name: 'test', type: 'int', cmd: 'test', desc: 'Test input in sub' },
+				{ name: 'testToo', type: 'int', cmd: 'testToo', desc: 'Test input in sub' }
+			]
+		},
+
+		{
+			name: 'ledConfig',
+			type: 'list',
+			cmd: 'leds',
+			desc: 'LED config',
+			actions: [
+				{ name: 'pin', type: 'int', cmd: 'pin', desc: 'The pin to which the LED is connected' },
+				{ name: 'timeOn', type: 'int', cmd: 'timeon', desc: 'The on time for the LED' },
+				{ name: 'timeOff', type: 'int', cmd: 'timeoff', desc: 'The off time for the LED' }
+			]
+		}
+	]
+};
+
+function getStructTypedef(obj) {
+	var struct = "typedef struct {\n";
+	var level = 0;
+
+	for(var n in obj.actions) {
+		if(obj.actions[n].type == "bool")
+			struct += indent(level+1) + "bool " + obj.actions[n].name + ";\n";
+		else if(obj.actions[n].type == "int")
+			struct += indent(level+1) + "int " + obj.actions[n].name + ";\n";
+		//TODO: else if(obj.actions[n].type == "sub")
+		//	struct += "\n" + getStruct(obj.actions[n], n, level+1);
+	}
+
+	struct += "} " + obj.name + ";";
+
+	return struct;
+}
+
+function getStructTypedefs(obj) {
+	var typedefs = "";
+	for(var n in obj.actions) {
+		if(obj.actions[n].type == "list") {
+			typedefs += getStructTypedef(obj.actions[n]) + "\n";
+		}
+	}
+	return typedefs;
+}
+
+function getStruct(obj, level, namePrefixed) {
+	if(!namePrefixed) namePrefixed = obj.name;
+
+	var struct = indent(level) + "struct {\n";
+	if(level == 0)
+		struct += indent(level+1) + "unsigned int version;\n\n";
+
+	for(var n in obj.actions) {
+		if(obj.actions[n].type == "bool") {
+			struct += indent(level+1) + "bool " + obj.actions[n].name + ";\n";
+		} else if(obj.actions[n].type == "int") {
+			struct += indent(level+1) + "int " + obj.actions[n].name + ";\n";
+		} else if(obj.actions[n].type == "sub") {
+			struct += "\n";
+			struct += getStruct(obj.actions[n], level+1, namePrefixed + '.' + obj.actions[n].name);
+		} else if(obj.actions[n].type == "list") {
+			struct += "\n" + indent(level+1) + "int " + obj.actions[n].name + "Count;\n";
+			struct += indent(level+1) + obj.actions[n].name + "* " + obj.actions[n].name + "s;\n";
+		}
+	}
+
+	struct += indent(level)+"} " + obj.name + ";\n";
+
+	return struct;
+}
+
+function getFuncLoad(obj, level, name) {
+	if(!name) name = obj.name;
+	var load = '';
+
+	if(level == 0) {
+		load += indent(level) + 'void loadConfig(int argc, char** argv) {\n';
+		load += indent(level + 1) + 'int n = 0;\n\n';
+	}
+
+	if(level == 0)
+		load += indent(level + 1) + 'load_uint(&' + name + '.version, &n);\n';
+
+	for(var n in obj.actions) {
+		if(obj.actions[n].type == "bool") {
+			load += indent(level + 1) + 'load_bool(&' + name + '.' + obj.actions[n].name + ', &n);\n';
+		} else if(obj.actions[n].type == "int") {
+			load += indent(level + 1) + 'load_int(&' + name + '.' + obj.actions[n].name + ', &n);\n';
+		} else if(obj.actions[n].type == "sub") {
+			load += getFuncLoad(obj.actions[n], level + 1, name + '.' + obj.actions[n].name);
+		} else if(obj.actions[n].type == "list") {
+			load += indent(level + 1) + 'load_int(&' + name + '.' + obj.actions[n].name + 'Count, &n);\n';
+			load += indent(level + 1) + 'for(int j=0; j<' + name + '.' + obj.actions[n].name + 'Count; j++) {\n';
+			load += getFuncLoad(obj.actions[n], level + 2, name + '.' + obj.actions[n].name + 's[j]');
+			load += indent(level + 1) + '}\n';
+		}
+	}
+
+	if(level == 0) {
+		load += '\n';
+		load += indent(level + 1) + 'Serial.print("Loaded ");\n';
+		load += indent(level + 1) + 'Serial.print(n);\n';
+		load += indent(level + 1) + 'Serial.println(" bytes");\n';
+		load += '}\n';
+	}
+
+	return load;
+}
+
+function getFuncSave(obj, level, name) {
+	if(!name) name = obj.name;
+	var save = '';
+
+	if(level == 0) {
+		save += indent(level) + 'void saveConfig(int argc, char** argv) {\n';
+		save += indent(level + 1) + 'int n = 0;\n\n';
+	}
+
+	if(level == 0)
+		save += indent(level + 1) + 'save_uint(&' + name + '.version, &n);\n';
+
+	for(var n in obj.actions) {
+		if(obj.actions[n].type == "bool") {
+			save += indent(level + 1) + 'save_bool(&' + name + '.' + obj.actions[n].name + ', &n);\n';
+		} else if(obj.actions[n].type == "int") {
+			save += indent(level + 1) + 'save_int(&' + name + '.' + obj.actions[n].name + ', &n);\n';
+		} else if(obj.actions[n].type == "sub") {
+			save += getFuncSave(obj.actions[n], level + 1, name + '.' + obj.actions[n].name);
+		} else if(obj.actions[n].type == "list") {
+			save += indent(level + 1) + 'save_int(&' + name + '.' + obj.actions[n].name + 'Count, &n);\n';
+			save += indent(level + 1) + 'for(int j=0; j<' + name + '.' + obj.actions[n].name + 'Count; j++) {\n';
+			save += getFuncSave(obj.actions[n], level + 2, name + '.' + obj.actions[n].name + 's[j]');
+			save += indent(level + 1) + '}\n';
+		}
+	}
+
+	if(level == 0) {
+		save += '\n';
+		save += indent(level + 1) + 'Serial.print("Saved ");\n';
+		save += indent(level + 1) + 'Serial.print(n);\n';
+		save += indent(level + 1) + 'Serial.println(" bytes");\n';
+		save += '}\n';
+	}
+
+	return save;
+}
+
+function sortByCmd(a, b) {
+	var cmdA = a.cmd.toLowerCase();
+	var cmdB = b.cmd.toLowerCase();
+	if(cmdA < cmdB) return -1;
+	if(cmdA > cmdB) return 1;
+	return 0;
+}
+
+function getMenu(obj, namePrefixed) {
+	if(!namePrefixed) namePrefixed = obj.name;
+
+	var menu = "";
+	var menuActs = "";
+
+	obj.actions.sort(sortByCmd);
+
+	for(var n in obj.actions) {
+		if(obj.actions[n].type == "bool") {
+			menu += 'ConsoleMenuBoolInput act' + obj.actions[n].name + '("' + obj.actions[n].cmd + '", "' + obj.actions[n].desc + '", &' + namePrefixed + '.'  + obj.actions[n].name + ');\n';
+			menuActs += "&act" + obj.actions[n].name + ", ";
+		} else if(obj.actions[n].type == "int") {
+			if(obj.actions[n].min == undefined) obj.actions[n].min = 'INT_MIN';
+			if(obj.actions[n].max == undefined) obj.actions[n].max = 'INT_MAX';
+			menu += 'ConsoleMenuIntInput act' + obj.actions[n].name + '("' + obj.actions[n].cmd + '", "' + obj.actions[n].desc + '", &' + namePrefixed + '.' + obj.actions[n].name + ', ' + obj.actions[n].min + ', ' + obj.actions[n].max + ');\n';
+			menuActs += "&act" + obj.actions[n].name + ", ";
+		} else if(obj.actions[n].type == "sub") {
+			menu += 'ConsoleMenu menu_' + obj.actions[n].name + '("' + obj.actions[n].cmd + '", "' + obj.actions[n].title + '", "' + obj.actions[n].desc + '");\n';
+
+			menu += getMenu(obj.actions[n], namePrefixed + '.' + obj.actions[n].name);
+			menu += "menu_" + obj.actions[n].name + ".menuItems = menu_" + obj.actions[n].name + "_acts;\n";
+			menu += "menu_" + obj.actions[n].name + ".menuItemCount = arlen(menu_" + obj.actions[n].name + "_acts);\n";
+
+			menuActs += "&menu_" + obj.actions[n].name + ", ";
+		} else if(obj.actions[n].type == "list") {
+			//TODO: create menu for list
+			menu += 'ConsoleMenu list_' + obj.actions[n].name + '("' + obj.actions[n].cmd + '", "' + obj.actions[n].cmd + '", "' + obj.actions[n].desc + '");\n';
+
+			menu += "ConsoleMenuItem *menu_" + obj.actions[n].name + "_acts[0];\n";
+			menu += "list_" + obj.actions[n].name + ".menuItems = menu_" + obj.actions[n].name + "_acts;\n";
+			menu += "list_" + obj.actions[n].name + ".menuItemCount = arlen(menu_" + obj.actions[n].name + "_acts);\n";
+
+			menuActs += "&list_" + obj.actions[n].name + ", ";
+		} else if(obj.actions[n].type == "execute") {
+			menu += 'ConsoleMenuExecuter act' + obj.actions[n].name + '("' + obj.actions[n].cmd + '", "' + obj.actions[n].desc + '", &' + obj.actions[n].method + ');\n';
+			menuActs += "&act" + obj.actions[n].name + ", ";
+		}
+	}
+
+	menu += "ConsoleMenuItem *menu_" + obj.name + "_acts[] = { " + menuActs.substring(0, menuActs.length-2) + "};\n";
+
+	return menu;
+}
+
+function generate() {
+	var structTypedefs = getStructTypedefs(config);
+
+	var struct = getStruct(config, 0);
+
+	var funcLoad = getFuncLoad(config, 0);
+	var funcSave = getFuncSave(config, 0);
+
+	var menu = getMenu(config, "config");
+	menu += 'ConsoleMenu menu_main("", "main", "The main menu");\n';
+	menu += 'menu_main.menuItems = menu_config_acts;\n';
+	menu += 'menu_main.menuItemCount = arlen(menu_config_acts);\n';
+	menu += '\n';
+	menu += 'menu_main.execute(0, NULL);\n';
+
+	$('output').value =
+		structTypedefs + "\n" +
+		struct + "\n" +
+		funcLoad + "\n" +
+		funcSave + "\n" +
+		menu;
+}
+
+function indent(n) {
+	var ret = "";
+	while(n-- > 0) ret += "  ";
+	return ret;
+}
+
+function $(name) {
+	return document.getElementById(name);
+}
+
+</script>
+
+</head>
+<body>
+
+<input type="button" value="Generate" onClick="generate()"><br/>
+
+<textarea id="output" rows="20" cols="100"></textarea>
+
+</body>
+</html>
